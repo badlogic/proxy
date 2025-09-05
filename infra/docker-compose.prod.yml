@@ -1,0 +1,13 @@
+services:
+  web:
+    labels:
+      caddy: proxy.mariozechner.at
+      caddy.reverse_proxy: '{{upstreams 80}}'
+    networks:
+      - caddy-network
+  backend:
+    networks:
+      - caddy-network
+networks:
+  caddy-network:
+    external: true

@@ -1,0 +1,34 @@
+#!/bin/bash
+
+curl "http://localhost:3000/proxy?target=https://api.anthropic.com/v1/messages" \
+  -H 'accept: application/json' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'anthropic-beta: oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14' \
+  -H 'anthropic-dangerous-direct-browser-access: true' \
+  -H 'anthropic-version: 2023-06-01' \
+  -H 'cache-control: no-cache' \
+  -H 'content-type: application/json' \
+  -H 'dnt: 1' \
+  -H 'origin: http://localhost:8080' \
+  -H 'referer: http://localhost:8080' \
+  -H 'pragma: no-cache' \
+  -H 'priority: u=1, i' \
+  -H 'referer: http://localhost:8080/' \
+  -H 'sec-ch-ua: "Not;A=Brand";v="99", "Google Chrome";v="139", "Chromium";v="139"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "macOS"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: cross-site' \
+  -H 'user-agent: node' \
+  -H "authorization: bearer $ANTHROPIC_OAUTH_TOKEN" \
+  -H 'x-stainless-arch: unknown' \
+  -H 'x-stainless-helper-method: stream' \
+  -H 'x-stainless-lang: js' \
+  -H 'x-stainless-os: Unknown' \
+  -H 'x-stainless-package-version: 0.60.0' \
+  -H 'x-stainless-retry-count: 0' \
+  -H 'x-stainless-runtime: browser:chrome' \
+  -H 'x-stainless-runtime-version: 139.0.0' \
+  -H 'x-stainless-timeout: 600' \
+  --data-raw '{"model":"claude-3-5-haiku-20241022","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"max_tokens":8192,"stream":true,"system":"You are a helpful assistant. When creating substantial content like HTML pages, code examples, or documents, use the artifacts tool to create them as persistent, referenceable objects.","tools":[{"name":"get_current_time","description":"Get the current date and time","input_schema":{"type":"object","properties":{"timezone":{"type":"string","description":"The timezone to get the time for (e.g., \"UTC\", \"America/New_York\")"}},"required":[]}},{"name":"calculate","description":"Perform basic mathematical calculations","input_schema":{"type":"object","properties":{"expression":{"type":"string","description":"The mathematical expression to evaluate (e.g., \"2 + 2\", \"Math.sqrt(16)\", \"5 * 3\")"}},"required":["expression"]}},{"name":"javascript_repl","description":"Execute JavaScript code in a sandboxed browser environment with full modern browser capabilities.","input_schema":{"type":"object","properties":{"code":{"type":"string","description":"JavaScript code to execute"}},"required":["code"]}},{"name":"exa_search","description":"Search the web using Exa neural search API for high-quality, relevant results.","input_schema":{"type":"object","properties":{"query":{"type":"string","description":"The search query - can be a natural language question or topic"},"num_results":{"type":"number","description":"Number of results to return (default: 5, max: 10)"},"include_domains":{"type":"array","items":{"type":"string"},"description":"Restrict search to specific domains"},"exclude_domains":{"type":"array","items":{"type":"string"},"description":"Exclude specific domains from search"},"start_published_date":{"type":"string","description":"Filter for content published after this date (YYYY-MM-DD)"},"end_published_date":{"type":"string","description":"Filter for content published before this date (YYYY-MM-DD)"}},"required":["query"]}},{"name":"artifacts","description":"Creates and updates artifacts.","input_schema":{"type":"object","properties":{"command":{"type":"string","enum":["create","update","rewrite","get","delete"],"description":"The operation to perform"},"id":{"type":"string","description":"Unique identifier for the artifact"},"type":{"type":"string","description":"MIME type of the artifact"},"title":{"type":"string","description":"Display title of the artifact"},"content":{"type":"string","description":"The artifact content"},"language":{"type":"string","description":"Programming language for code artifacts"},"old_str":{"type":"string","description":"String to replace (for update command)"},"new_str":{"type":"string","description":"Replacement string (for update command)"}},"required":["command","id"]}}]}'

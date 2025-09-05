@@ -1,0 +1,22 @@
+services:
+  web:
+    image: caddy:alpine
+    restart: unless-stopped
+    stop_grace_period: 1s
+    volumes:
+      - ../dist:/srv:ro
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+  backend:
+    image: node:alpine
+    restart: unless-stopped
+    working_dir: /app
+    env_file:
+      - ../.env
+    volumes:
+      - ../package.json:/app/package.json
+      - ../package-lock.json:/app/package-lock.json
+      - ../dist/backend:/app/dist/backend:ro
+      - backend_node_modules:/app/node_modules
+    command: sh -c "npm ci --omit=dev --ignore-scripts && node dist/backend/server.js"
+volumes:
+  backend_node_modules: null
