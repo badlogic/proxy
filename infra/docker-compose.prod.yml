@@ -5,9 +5,12 @@ services:
       caddy.reverse_proxy: '{{upstreams 80}}'
     networks:
       - caddy-network
+      - internal
   backend:
+    # Backend only needs internal network, not exposed to caddy directly
     networks:
-      - caddy-network
+      - internal
 networks:
   caddy-network:
     external: true
+  internal:
