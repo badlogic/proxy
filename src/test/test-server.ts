@@ -1,9 +1,9 @@
-import express, { Request, Response } from "express";
+import express, { type Request, Response } from "express";
+import fs from "fs";
 import { IncomingHttpHeaders } from "http";
 import multer from "multer";
-import path from "path";
-import fs from "fs";
 import os from "os";
+import path from "path";
 
 const app = express();
 const port = process.env.TEST_PORT || 4000;
@@ -13,27 +13,27 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Configure multer for file uploads
-const uploadDir = path.join(os.tmpdir(), 'proxy-test-uploads');
+const uploadDir = path.join(os.tmpdir(), "proxy-test-uploads");
 if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
+   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
-  }
+   destination: (req, file, cb) => {
+      cb(null, uploadDir);
+   },
+   filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+      cb(null, file.fieldname + "-" + uniqueSuffix + path.extname(file.originalname));
+   },
 });
 
-const upload = multer({ 
-  storage,
-  limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB max file size
-    files: 10 // max 10 files
-  }
+const upload = multer({
+   storage,
+   limits: {
+      fileSize: 10 * 1024 * 1024, // 10MB max file size
+      files: 10, // max 10 files
+   },
 });
 
 // Store for testing stateful operations
@@ -177,83 +177,87 @@ app.post("/test/form", express.urlencoded({ extended: true }), (req, res) => {
 });
 
 // Multipart form data with file uploads
-app.post("/test/multipart", upload.fields([
-   { name: 'file', maxCount: 1 },
-   { name: 'files', maxCount: 5 },
-   { name: 'avatar', maxCount: 1 },
-   { name: 'documents', maxCount: 10 }
-]), (req, res) => {
-   const files = req.files as { [fieldname: string]: Express.Multer.File[] };
-   
-   // Process uploaded files
-   const fileInfo: any = {};
-   for (const [fieldName, fileArray] of Object.entries(files || {})) {
-      fileInfo[fieldName] = fileArray.map(f => ({
-         originalName: f.originalname,
-         filename: f.filename,
-         mimeType: f.mimetype,
-         size: f.size,
-         path: f.path
-      }));
-   }
-   
-   res.json({
-      message: "Multipart data received",
-      contentType: req.headers["content-type"],
-      fields: req.body, // Non-file form fields
-      files: fileInfo,
-      totalFiles: Object.values(files || {}).reduce((sum, arr) => sum + arr.length, 0)
-   });
-});
+app.post(
+   "/test/multipart",
+   upload.fields([
+      { name: "file", maxCount: 1 },
+      { name: "files", maxCount: 5 },
+      { name: "avatar", maxCount: 1 },
+      { name: "documents", maxCount: 10 },
+   ]),
+   (req, res) => {
+      const files = req.files as { [fieldname: string]: Express.Multer.File[] };
+
+      // Process uploaded files
+      const fileInfo: any = {};
+      for (const [fieldName, fileArray] of Object.entries(files || {})) {
+         fileInfo[fieldName] = fileArray.map((f) => ({
+            originalName: f.originalname,
+            filename: f.filename,
+            mimeType: f.mimetype,
+            size: f.size,
+            path: f.path,
+         }));
+      }
+
+      res.json({
+         message: "Multipart data received",
+         contentType: req.headers["content-type"],
+         fields: req.body, // Non-file form fields
+         files: fileInfo,
+         totalFiles: Object.values(files || {}).reduce((sum, arr) => sum + arr.length, 0),
+      });
+   },
+);
 
 // Single file upload endpoint
-app.post("/test/upload/single", upload.single('file'), (req, res) => {
+app.post("/test/upload/single", upload.single("file"), (req, res) => {
    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
+      return res.status(400).json({ error: "No file uploaded" });
    }
-   
+
    res.json({
-      message: 'File uploaded successfully',
+      message: "File uploaded successfully",
       file: {
          originalName: req.file.originalname,
          filename: req.file.filename,
          mimeType: req.file.mimetype,
          size: req.file.size,
-         path: req.file.path
+         path: req.file.path,
       },
-      fields: req.body
+      fields: req.body,
    });
 });
 
 // Multiple files upload endpoint
-app.post("/test/upload/multiple", upload.array('files', 5), (req, res) => {
+app.post("/test/upload/multiple", upload.array("files", 5), (req, res) => {
    if (!req.files || !Array.isArray(req.files)) {
-      return res.status(400).json({ error: 'No files uploaded' });
+      return res.status(400).json({ error: "No files uploaded" });
    }
-   
+
    res.json({
-      message: 'Files uploaded successfully',
+      message: "Files uploaded successfully",
       count: req.files.length,
-      files: req.files.map(f => ({
+      files: req.files.map((f) => ({
          originalName: f.originalname,
          filename: f.filename,
          mimeType: f.mimetype,
-         size: f.size
+         size: f.size,
       })),
-      fields: req.body
+      fields: req.body,
    });
 });
 
 // Raw binary upload endpoint
-app.post("/test/upload/raw", express.raw({ type: '*/*', limit: '10mb' }), (req, res) => {
+app.post("/test/upload/raw", express.raw({ type: "*/*", limit: "10mb" }), (req, res) => {
    const buffer = req.body as Buffer;
-   
+
    res.json({
-      message: 'Raw binary data received',
-      contentType: req.headers['content-type'],
+      message: "Raw binary data received",
+      contentType: req.headers["content-type"],
       size: buffer.length,
       first10Bytes: Array.from(buffer.slice(0, 10)),
-      isBuffer: Buffer.isBuffer(buffer)
+      isBuffer: Buffer.isBuffer(buffer),
    });
 });
 
@@ -479,7 +483,7 @@ app.get("/test", (req, res) => {
             "POST /test/multipart (multipart/form-data with files)",
             "POST /test/upload/single (single file)",
             "POST /test/upload/multiple (multiple files)",
-            "POST /test/upload/raw (raw binary)"
+            "POST /test/upload/raw (raw binary)",
          ],
          special: [
             "GET /test/slow?delay=5000",

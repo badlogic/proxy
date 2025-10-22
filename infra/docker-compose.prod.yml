@@ -8,6 +8,8 @@ services:
       - internal
   backend:
     # Backend only needs internal network, not exposed to caddy directly
+    environment:
+      NODE_ENV: production
     networks:
       - internal
 networks:

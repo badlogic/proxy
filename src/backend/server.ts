@@ -5,154 +5,240 @@ import { createProxyMiddleware, type Options as ProxyOptions } from "http-proxy-
 import type { Socket } from "net";
 import { URL } from "url";
 
+interface ProxyContext {
+   targetUrl: URL;
+   finalPath: string;
+   isSse: boolean;
+}
+
+type ProxyRequest = Request & {
+   proxyContext?: ProxyContext;
+};
+
 const app = express();
-const port = process.env.PORT || 3000;
+const port = Number(process.env.PORT ?? 3000);
 const isDevelopment = process.env.NODE_ENV !== "production";
 
-// Proxy configuration
-const PROXY_TIMEOUT = 30000; // 30 seconds
+const parsedTimeout = Number(process.env.PROXY_TIMEOUT);
+const DEFAULT_PROXY_TIMEOUT = Number.isFinite(parsedTimeout) ? parsedTimeout : 30000; // 30s default; set env to override
 
-app.use(cors());
+app.use(
+   cors({
+      origin: true,
+      credentials: true,
+   }),
+);
 
-// Custom logging middleware
+// Avoid body parsing for the proxy endpoint so we can stream bodies untouched
 app.use((req, res, next) => {
-   const start = Date.now();
-   const originalEnd = res.end;
-
-   res.end = function (this: Response, ...args: any[]): Response {
-      const duration = Date.now() - start;
-      if (req.path === "/proxy") {
-         console.log(`[PROXY] ${req.method} ${req.path} -> ${res.statusCode} (${duration}ms)`);
-      }
-      return originalEnd.apply(this, args as any) as Response;
-   };
-
-   next();
-});
-
-// Parse JSON only for non-proxy routes
-app.use((req, res, next) => {
-   if (req.path !== "/proxy") {
-      express.json()(req, res, next);
-   } else {
-      next();
+   if (req.path.startsWith("/proxy")) {
+      return next();
    }
+
+   express.json({ limit: "1mb" })(req, res, next);
 });
 
-app.get("/api/health", (req, res) => {
+// CORS preflight for the proxy endpoint itself
+const handleProxyPreflight = (req: Request, res: Response) => {
+   const origin = req.headers.origin ?? "*";
+   const requestedMethod = req.headers["access-control-request-method"];
+   const requestedHeaders = req.headers["access-control-request-headers"];
+
+   res.header("Access-Control-Allow-Origin", origin);
+   res.header("Access-Control-Allow-Credentials", "true");
+   res.header(
+      "Access-Control-Allow-Methods",
+      requestedMethod ? String(requestedMethod) : "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+   );
+   res.header(
+      "Access-Control-Allow-Headers",
+      requestedHeaders ? String(requestedHeaders) : "Authorization,Content-Type",
+   );
+   res.header("Access-Control-Max-Age", "86400");
+   res.sendStatus(204);
+};
+
+app.options("/proxy", handleProxyPreflight);
+app.options("/proxy/*", handleProxyPreflight);
+
+app.get("/api/health", (_req, res) => {
    res.json({ status: "healthy", timestamp: new Date().toISOString() });
 });
 
-app.get("/api/hello", (req, res) => {
-   res.json({ message: "Hello from proxy API!" });
-});
+function resolveRawTarget(req: Request): string | undefined {
+   const query = req.query;
+   const queryUrl = typeof query.url === "string" ? query.url : undefined;
+   const queryTarget = typeof query.target === "string" ? query.target : undefined;
+   const headerTarget = req.header("x-proxy-target");
+   const params = req.params as Record<string, string | undefined>;
+   const wildcardTarget = params?.["0"];
 
-// Single proxy endpoint
-app.all("/proxy", (req: Request, res: Response, next: NextFunction) => {
-   // Handle preflight OPTIONS requests (when browser is checking CORS for the proxy itself)
-   if (req.method === "OPTIONS" && !req.query.target) {
-      // This is a preflight request to the proxy endpoint itself
-      return res.status(204).end();
+   const candidate = queryUrl ?? queryTarget ?? headerTarget ?? wildcardTarget;
+   if (!candidate || !candidate.trim()) {
+      return undefined;
    }
 
-   const targetUrl = req.query.target as string;
+   const encodedFlag = Array.isArray(query.encoded)
+      ? query.encoded.includes("true")
+      : typeof query.encoded === "string" && query.encoded.toLowerCase() === "true";
 
-   if (!targetUrl) {
-      return res.status(400).json({ error: "Missing target parameter" });
+   if (encodedFlag) {
+      try {
+         return Buffer.from(candidate.trim(), "base64").toString("utf8");
+      } catch {
+         // fall back to raw value if decoding fails
+      }
    }
 
+   return candidate.trim();
+}
+
+function buildFinalPath(targetUrl: URL, originalUrl: string): string {
+   const mergedParams = new URLSearchParams(targetUrl.search);
+   const queryIndex = originalUrl.indexOf("?");
+
+   if (queryIndex >= 0) {
+      const extras = new URLSearchParams(originalUrl.slice(queryIndex + 1));
+      extras.forEach((value, key) => {
+         if (key === "url" || key === "target" || key === "encoded") {
+            return;
+         }
+         mergedParams.append(key, value);
+      });
+   }
+
+   const queryString = mergedParams.toString();
+   return `${targetUrl.pathname}${queryString ? `?${queryString}` : ""}`;
+}
+
+function handleProxy(req: ProxyRequest, res: Response, next: NextFunction): void {
+   const rawTarget = resolveRawTarget(req);
+
+   if (!rawTarget) {
+      res.status(400).json({ error: "Missing target url" });
+      return;
+   }
+
+   let targetUrl: URL;
    try {
-      new URL(targetUrl);
-   } catch (error) {
-      return res.status(400).json({ error: "Invalid target URL" });
+      targetUrl = new URL(rawTarget);
+   } catch {
+      res.status(400).json({ error: "Invalid target URL" });
+      return;
    }
 
-   console.log(`[PROXY] Proxying request to: ${targetUrl}`);
+   const finalPath = buildFinalPath(targetUrl, req.originalUrl);
+   const acceptsHeader = String(req.headers.accept || "");
+   const isSse = acceptsHeader.split(",").some((part) => part.trim().startsWith("text/event-stream"));
 
-   const targetUrlParsed = new URL(targetUrl);
-   const targetBase = `${targetUrlParsed.protocol}//${targetUrlParsed.host}`;
+   req.proxyContext = { targetUrl, finalPath, isSse };
+
+   if (isSse) {
+      // Keep sockets alive for streaming responses
+      req.socket.setTimeout(0);
+      req.socket.setKeepAlive(true);
+      res.socket?.setTimeout?.(0);
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("X-Accel-Buffering", "no");
+   }
 
    const proxyOptions: ProxyOptions = {
-      target: targetBase, // Use only the base URL
+      target: `${targetUrl.protocol}//${targetUrl.host}`,
       changeOrigin: true,
       followRedirects: false,
-      timeout: PROXY_TIMEOUT,
-      proxyTimeout: PROXY_TIMEOUT,
       secure: false,
       ws: true,
-
-      pathRewrite: (path, req) => {
-         // Use the parsed URL from above
-         const targetUrlObj = new URL(targetUrl);
-
-         // Get ALL query params from the original request
-         const expressReq = req as any;
-         const allQueryParams = expressReq.query || {};
-
-         // Start with target URL's existing params
-         const combinedParams = new URLSearchParams(targetUrlObj.search);
-
-         // Add all query params EXCEPT 'target'
-         for (const [key, value] of Object.entries(allQueryParams)) {
-            if (key !== "target" && !combinedParams.has(key)) {
-               combinedParams.set(key, String(value));
-            }
-         }
-
-         const queryString = combinedParams.toString();
-         return targetUrlObj.pathname + (queryString ? `?${queryString}` : "");
-      },
-
+      xfwd: true,
+      prependPath: false,
+      pathRewrite: () => finalPath,
+      logger: isDevelopment ? console : undefined,
       on: {
-         error: (err: Error, _req: IncomingMessage, res: ServerResponse | Socket) => {
+         proxyReq: (proxyReq: ClientRequest, rawReq: IncomingMessage) => {
+            const incomingHeaders = rawReq.headers;
+            for (const [headerName, headerValue] of Object.entries(incomingHeaders)) {
+               if (headerValue === undefined) {
+                  continue;
+               }
+
+               // Skip headers that we intentionally override
+               if (headerName === "host" || headerName === "connection") {
+                  continue;
+               }
+
+               if (headerName === "origin" || headerName === "referer") {
+                  continue;
+               }
+
+               proxyReq.setHeader(headerName, headerValue);
+            }
+
+            proxyReq.removeHeader("origin");
+            proxyReq.removeHeader("referer");
+
+            proxyReq.setHeader("X-Forwarded-Host", rawReq.headers.host ?? "");
+            proxyReq.setHeader("X-Proxy-Target", targetUrl.toString());
+
+            const expressReq = rawReq as ProxyRequest;
+            if (expressReq.proxyContext?.isSse) {
+               proxyReq.setHeader("Accept", "text/event-stream");
+               proxyReq.setHeader("Cache-Control", "no-cache");
+            }
+         },
+         proxyRes: (proxyRes: IncomingMessage, rawReq: IncomingMessage, rawRes: ServerResponse) => {
+            const expressReq = rawReq as ProxyRequest;
+            const context = expressReq.proxyContext;
+            const origin = rawReq.headers.origin ?? "*";
+
+            proxyRes.headers["access-control-allow-origin"] = origin;
+            proxyRes.headers["access-control-allow-credentials"] = "true";
+            if (!proxyRes.headers["access-control-expose-headers"]) {
+               proxyRes.headers["access-control-expose-headers"] = "*";
+            }
+
+            rawRes.setHeader("Access-Control-Allow-Origin", origin);
+            rawRes.setHeader("Access-Control-Allow-Credentials", "true");
+            rawRes.setHeader("Access-Control-Expose-Headers", "*");
+
+            if (context) {
+               rawRes.setHeader("x-proxy-target", context.targetUrl.toString());
+            }
+
+            if (typeof proxyRes.statusCode === "number") {
+               rawRes.setHeader("x-proxy-status", String(proxyRes.statusCode));
+            }
+         },
+         error: (err: Error, rawReq: IncomingMessage, rawRes: ServerResponse | Socket) => {
+            const context = (rawReq as ProxyRequest).proxyContext;
             console.error("[PROXY ERROR]", err.message);
 
-            if (res instanceof ServerResponse && !res.headersSent) {
-               res.writeHead(502, { "Content-Type": "application/json" });
-               res.end(
+            if (rawRes instanceof ServerResponse && !rawRes.headersSent) {
+               rawRes.writeHead(502, { "Content-Type": "application/json" });
+               rawRes.end(
                   JSON.stringify({
                      error: "Proxy error",
                      message: err.message,
-                     target: targetUrl,
+                     url: context?.targetUrl.toString(),
                   }),
                );
             }
          },
-
-         proxyReq: (proxyReq: ClientRequest, req: IncomingMessage) => {
-            if (isDevelopment) {
-               console.log(`[PROXY REQ] ${req.method} -> ${targetUrl}`);
-            }
-
-            // Remove headers that might cause issues when forwarding
-            proxyReq.removeHeader("origin");
-            proxyReq.removeHeader("referer");
-
-            // Add forwarding headers
-            proxyReq.setHeader("X-Forwarded-Host", req.headers.host || "");
-         },
-
-         proxyRes: (proxyRes: IncomingMessage) => {
-            if (isDevelopment) {
-               console.log(`[PROXY RES] ${proxyRes.statusCode} from ${targetUrl}`);
-            }
-
-            // Add CORS headers
-            if (!proxyRes.headers["access-control-allow-origin"]) {
-               proxyRes.headers["access-control-allow-origin"] = "*";
-            }
-         },
       },
-
-      logger: isDevelopment ? console : undefined,
    };
+
+   if (!isSse && DEFAULT_PROXY_TIMEOUT > 0) {
+      proxyOptions.timeout = DEFAULT_PROXY_TIMEOUT;
+      proxyOptions.proxyTimeout = DEFAULT_PROXY_TIMEOUT;
+   }
 
    const proxy = createProxyMiddleware(proxyOptions);
    proxy(req, res, next);
-});
+}
+
+app.all("/proxy", handleProxy);
+app.all("/proxy/*", handleProxy);
 
 // Global error handler
-app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
+app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
    console.error("API Error:", err);
 
    const status = (err as any).status || 500;
@@ -171,5 +257,5 @@ app.use((_req: Request, res: Response) => {
 
 app.listen(port, () => {
    console.log(`API server running on port ${port}`);
-   console.log(`Usage: http://localhost:${port}/proxy?target=<url>`);
+   console.log(`Usage: http://localhost:${port}/proxy?url=<url>`);
 });
