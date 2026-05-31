@@ -1,9 +1,16 @@
+import { type ClientRequest, type IncomingMessage, ServerResponse } from "node:http";
+import type { Socket } from "node:net";
+import { URL } from "node:url";
 import cors from "cors";
 import express, { type NextFunction, type Request, type Response } from "express";
-import { type ClientRequest, type IncomingMessage, ServerResponse } from "http";
 import { createProxyMiddleware, type Options as ProxyOptions } from "http-proxy-middleware";
-import type { Socket } from "net";
-import { URL } from "url";
+import {
+   getRedditCookieHeader,
+   getRedditCookieStatus,
+   isRedditHost,
+   refreshRedditCookies,
+   startRedditCookieAutomation,
+} from "./reddit-cookies.js";
 
 interface ProxyContext {
    targetUrl: URL;
@@ -17,6 +24,7 @@ type ProxyRequest = Request & {
 
 const app = express();
 const port = Number(process.env.PORT ?? 3000);
+startRedditCookieAutomation();
 const isDevelopment = process.env.NODE_ENV !== "production";
 
 const parsedTimeout = Number(process.env.PROXY_TIMEOUT);
@@ -62,7 +70,12 @@ app.options("/proxy", handleProxyPreflight);
 app.options("/proxy/*", handleProxyPreflight);
 
 app.get("/api/health", (_req, res) => {
-   res.json({ status: "healthy", timestamp: new Date().toISOString() });
+   res.json({ status: "healthy", timestamp: new Date().toISOString(), redditCookies: getRedditCookieStatus() });
+});
+
+app.post("/api/reddit-cookies/refresh", async (_req, res) => {
+   await refreshRedditCookies();
+   res.json(getRedditCookieStatus());
 });
 
 function resolveRawTarget(req: Request): string | undefined {
@@ -148,7 +161,7 @@ function handleProxy(req: ProxyRequest, res: Response, next: NextFunction): void
       followRedirects: false,
       secure: false,
       ws: true,
-      xfwd: true,
+      xfwd: false,
       prependPath: false,
       pathRewrite: () => finalPath,
       logger: isDevelopment ? console : undefined,
@@ -160,12 +173,20 @@ function handleProxy(req: ProxyRequest, res: Response, next: NextFunction): void
                   continue;
                }
 
-               // Skip headers that we intentionally override
-               if (headerName === "host" || headerName === "connection") {
-                  continue;
-               }
-
-               if (headerName === "origin" || headerName === "referer") {
+               // Skip headers that we intentionally override or that reveal proxying
+               const lowerHeaderName = headerName.toLowerCase();
+               if (
+                  lowerHeaderName === "host" ||
+                  lowerHeaderName === "connection" ||
+                  lowerHeaderName === "origin" ||
+                  lowerHeaderName === "referer" ||
+                  lowerHeaderName === "forwarded" ||
+                  lowerHeaderName === "via" ||
+                  lowerHeaderName === "x-real-ip" ||
+                  lowerHeaderName.startsWith("x-forwarded-") ||
+                  lowerHeaderName.startsWith("x-proxy-") ||
+                  lowerHeaderName.startsWith("x-ngrok-")
+               ) {
                   continue;
                }
 
@@ -174,11 +195,41 @@ function handleProxy(req: ProxyRequest, res: Response, next: NextFunction): void
 
             proxyReq.removeHeader("origin");
             proxyReq.removeHeader("referer");
+            proxyReq.removeHeader("forwarded");
+            proxyReq.removeHeader("via");
+            proxyReq.removeHeader("x-real-ip");
+            proxyReq.removeHeader("x-forwarded-for");
+            proxyReq.removeHeader("x-forwarded-host");
+            proxyReq.removeHeader("x-forwarded-port");
+            proxyReq.removeHeader("x-forwarded-proto");
+            proxyReq.removeHeader("x-proxy-target");
 
-            proxyReq.setHeader("X-Forwarded-Host", rawReq.headers.host ?? "");
-            proxyReq.setHeader("X-Proxy-Target", targetUrl.toString());
+            proxyReq.setHeader(
+               "User-Agent",
+               "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            );
+            proxyReq.setHeader("Accept", "application/json,text/plain,*/*");
+            proxyReq.setHeader("Accept-Language", "en-US,en;q=0.9");
 
             const expressReq = rawReq as ProxyRequest;
+            const targetHost = expressReq.proxyContext?.targetUrl.hostname ?? "";
+            if (isRedditHost(targetHost)) {
+               const redditCookies = getRedditCookieHeader();
+               if (redditCookies) {
+                  proxyReq.setHeader("Cookie", redditCookies);
+               }
+               proxyReq.setHeader(
+                  "User-Agent",
+                  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+               );
+               proxyReq.setHeader("Sec-CH-UA", '"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"');
+               proxyReq.setHeader("Sec-CH-UA-Mobile", "?0");
+               proxyReq.setHeader("Sec-CH-UA-Platform", '"macOS"');
+               proxyReq.setHeader("Sec-Fetch-Dest", "empty");
+               proxyReq.setHeader("Sec-Fetch-Mode", "cors");
+               proxyReq.setHeader("Sec-Fetch-Site", "same-origin");
+            }
+
             if (expressReq.proxyContext?.isSse) {
                proxyReq.setHeader("Accept", "text/event-stream");
                proxyReq.setHeader("Cache-Control", "no-cache");
@@ -241,7 +292,7 @@ app.all("/proxy/*", handleProxy);
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
    console.error("API Error:", err);
 
-   const status = (err as any).status || 500;
+   const status = err instanceof Error && "status" in err && typeof err.status === "number" ? err.status : 500;
    const message = isDevelopment ? err.message : "Internal server error";
 
    res.status(status).json({

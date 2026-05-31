@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>io.mario.proxy-ngrok</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/badlogic/workspaces/proxy/bin/run-service-in-tmux.sh</string>
+    <string>proxy-ngrok</string>
+    <string>/Users/badlogic/workspaces/proxy/bin/ngrok-command.sh</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>/Users/badlogic/workspaces/proxy/ngrok.launchd.log</string>
+  <key>StandardErrorPath</key><string>/Users/badlogic/workspaces/proxy/ngrok.launchd.err</string>
+</dict>
+</plist>
